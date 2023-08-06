@@ -1,4 +1,4 @@
-from typing import Literal
+import click
 import numpy as np
 import os
 import sklearn.model_selection
@@ -14,11 +14,11 @@ from tqdm import tqdm
 device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-def setup_train_val_split(labels, dryrun=False, seed=0):
+def setup_train_val_split(labels, dryrun=False):
     x = np.arange(len(labels))
     y = np.array(labels)
     splitter = sklearn.model_selection.StratifiedShuffleSplit(
-        n_splits=1, train_size=0.8, random_state=seed
+        n_splits=1, train_size=0.8
     )
     train_indices, val_indices = next(splitter.split(x, y))
 
@@ -77,6 +77,7 @@ def train_1epoch(
     train_loader: torch.utils.data.DataLoader,
     lossfun: nn.CrossEntropyLoss,
     optimizer: torch.optim.Optimizer,
+    lr_scheduler: torch.optim.lr_scheduler._LRScheduler,
     device: str,
 ):
     model.train()
@@ -92,6 +93,7 @@ def train_1epoch(
         _, pred = torch.max(out.detach(), 1)
         loss.backward()
         optimizer.step()
+        lr_scheduler.step()
 
         total_loss += loss.item() * x.size(0)
         total_acc += torch.sum(pred == y)
@@ -127,17 +129,20 @@ def validate_1epoch(
 
 
 def train(
+    data_dir: Path,
+    batch_size: int,
+    dryrun: bool,
     model: torchvision.models.ResNet,
     optimizer: torch.optim.Optimizer,
-    train_loader: torch.utils.data.DataLoader,
-    val_loader: torch.utils.data.DataLoader,
+    lr_scheduler: torch.optim.lr_scheduler._LRScheduler,
     n_epochs: int,
     device: str,
 ):
     lossfun = torch.nn.CrossEntropyLoss()
     for epoch in tqdm(range(n_epochs)):
+        train_loader, val_loader = setup_train_val_loaders(data_dir, batch_size, dryrun)
         train_acc, train_loss = train_1epoch(
-            model, train_loader, lossfun, optimizer, device
+            model, train_loader, lossfun, optimizer, lr_scheduler, device
         )
         val_acc, val_loss = validate_1epoch(model, val_loader, lossfun, device)
         print(
@@ -148,6 +153,7 @@ def train(
 def train_subsec5(
     data_dir: Path,
     batch_size: int,
+    n_epochs=1,
     dryrun=False,
     device: str = "cuda",
 ):
@@ -157,9 +163,22 @@ def train_subsec5(
     model.fc = torch.nn.Linear(model.fc.in_features, 2)
     model.to(device)
 
-    optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+    optimizer = torch.optim.SGD(
+        model.parameters(), lr=0.01, momentum=0.9, weight_decay=0.0001
+    )
     train_loader, val_loader = setup_train_val_loaders(data_dir, batch_size, dryrun)
-    train(model, optimizer, train_loader, val_loader, n_epochs=1, device=device)
+    n_iterations = len(train_loader) * n_epochs
+    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, n_iterations)
+    train(
+        data_dir,
+        batch_size,
+        dryrun,
+        model,
+        optimizer,
+        lr_scheduler,
+        n_epochs=n_epochs,
+        device=device,
+    )
     return model
 
 
@@ -217,10 +236,25 @@ def predict_subsec5(
     write_prediction(image_ids, preds, clip_threashold, out_dir / "out.csv")
 
 
-dryrun = False
-batch_size = 50
-clip_threashold = 0.0125
-model = train_subsec5(Path("data"), batch_size, dryrun=dryrun, device=device)
-predict_subsec5(
-    model, Path("data"), Path("."), batch_size, clip_threashold, dryrun=dryrun, device=device
-)
+@click.command()
+@click.option("-d", "--dryrun", default=False, is_flag=True, show_default=True)
+@click.option("-b", "--batch-size", default=50, show_default=True)
+@click.option("-n", "--epochs", "n_epochs", default=10, show_default=True)
+@click.option("-t", "--clip-threashold", default=0.0125, show_default=True)
+def solve(dryrun, batch_size, n_epochs, clip_threashold):
+    model = train_subsec5(
+        Path("data"), batch_size, n_epochs=n_epochs, dryrun=dryrun, device=device
+    )
+    predict_subsec5(
+        model,
+        Path("data"),
+        Path("."),
+        batch_size,
+        clip_threashold,
+        dryrun=dryrun,
+        device=device,
+    )
+
+
+if __name__ == "__main__":
+    solve()
