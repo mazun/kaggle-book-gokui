@@ -40,13 +40,24 @@ def setup_center_crop_transform():
     )
 
 
+def setup_center_crop_transform_with_random():
+    return transforms.Compose(
+        [
+            transforms.RandomResizedCrop(224),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+        ]
+    )
+
+
 def get_labels(dataset: torchvision.datasets.DatasetFolder):
     return [sample[1] for sample in dataset.samples]
 
 
 def setup_train_val_datasets(data_dir: Path, dryrun=False):
     dataset = torchvision.datasets.ImageFolder(
-        data_dir / "train", transform=setup_center_crop_transform()
+        data_dir / "train", transform=setup_center_crop_transform_with_random()
     )
     labels = get_labels(dataset)
     train_indices, val_indices = setup_train_val_split(labels, dryrun)
