@@ -113,6 +113,42 @@ def train_1epoch(
     avg_acc = total_acc / len(train_loader.dataset)
     return avg_acc, avg_loss
 
+def train_1epoch_mixup(
+    model: torchvision.models.ResNet,
+    train_loader: torch.utils.data.DataLoader,
+    lossfun: nn.CrossEntropyLoss,
+    optimizer: torch.optim.Optimizer,
+    lr_scheduler: torch.optim.lr_scheduler._LRScheduler,
+    mixup_alpha: float,
+    device: str,
+):
+    model.train()
+    total_loss, total_acc = 0.0, 0.0
+
+    for x, y in tqdm(train_loader):
+        x = x.to(device)
+        y = y.to(device)
+
+        lmd = np.random.beta(mixup_alpha, mixup_alpha)
+        perm = torch.randperm(x.shape[0]).to(device)
+        x2 = x[perm, :]
+        y2 = y[perm]
+
+        optimizer.zero_grad()
+        out = model(lmd * x + (1.0 - lmd) * x2)
+        loss = lmd * lossfun(out, y) + (1.0 - lmd) * lossfun(out, y2)
+        _, pred = torch.max(out.detach(), 1)
+        loss.backward()
+        optimizer.step()
+        lr_scheduler.step()
+
+        total_loss += loss.item() * x.size(0)
+        total_acc += lmd * torch.sum(pred == y) + (1.0 - lmd) * torch.sum(pred == y2)
+
+    avg_loss = total_loss / len(train_loader.dataset)
+    avg_acc = total_acc / len(train_loader.dataset)
+    return avg_acc, avg_loss
+
 
 def validate_1epoch(
     model: torchvision.models.ResNet,
@@ -147,14 +183,22 @@ def train(
     optimizer: torch.optim.Optimizer,
     lr_scheduler: torch.optim.lr_scheduler._LRScheduler,
     n_epochs: int,
+    n_mixup_epochs: int,
+    mixup_alpha: float,
     device: str,
 ):
     lossfun = torch.nn.CrossEntropyLoss()
     for epoch in tqdm(range(n_epochs)):
         train_loader, val_loader = setup_train_val_loaders(data_dir, batch_size, dryrun)
-        train_acc, train_loss = train_1epoch(
-            model, train_loader, lossfun, optimizer, lr_scheduler, device
-        )
+
+        if epoch < n_mixup_epochs:
+            train_acc, train_loss = train_1epoch_mixup(
+                model, train_loader, lossfun, optimizer, lr_scheduler, mixup_alpha, device
+            )
+        else:
+            train_acc, train_loss = train_1epoch(
+                model, train_loader, lossfun, optimizer, lr_scheduler, device
+            )
         val_acc, val_loss = validate_1epoch(model, val_loader, lossfun, device)
         print(
             f"epoch={epoch}, train loss={train_loss}, train accuracy={train_acc}, val loss={val_loss}, val accuracy={val_acc}"
@@ -164,7 +208,9 @@ def train(
 def train_subsec5(
     data_dir: Path,
     batch_size: int,
-    n_epochs=1,
+    n_epochs: int,
+    n_mixup_epochs: int,
+    mixup_alpha: float,
     dryrun=False,
     device: str = "cuda",
 ):
@@ -187,7 +233,9 @@ def train_subsec5(
         model,
         optimizer,
         lr_scheduler,
-        n_epochs=n_epochs,
+        n_epochs,
+        n_mixup_epochs,
+        mixup_alpha,
         device=device,
     )
     return model
@@ -251,10 +299,12 @@ def predict_subsec5(
 @click.option("-d", "--dryrun", default=False, is_flag=True, show_default=True)
 @click.option("-b", "--batch-size", default=50, show_default=True)
 @click.option("-n", "--epochs", "n_epochs", default=10, show_default=True)
+@click.option("-m", "--mixup-epochs", "n_mixup_epochs", default=7, show_default=True)
+@click.option("-m", "--mixup-alpha", default=0.4, show_default=True)
 @click.option("-t", "--clip-threashold", default=0.0125, show_default=True)
-def solve(dryrun, batch_size, n_epochs, clip_threashold):
+def solve(dryrun, batch_size, n_epochs, n_mixup_epochs, mixup_alpha, clip_threashold):
     model = train_subsec5(
-        Path("data"), batch_size, n_epochs=n_epochs, dryrun=dryrun, device=device
+        Path("data"), batch_size, n_epochs, n_mixup_epochs, mixup_alpha, dryrun=dryrun, device=device
     )
     predict_subsec5(
         model,
